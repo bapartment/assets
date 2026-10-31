@@ -1,0 +1,53 @@
+# 이니시스 카드사 무이자 할부 표 → inicis/installment.json 동기화
+# 결제 페이지(bundle-modules src/order/installment.ts)가 이 JSON을 읽어 무이자 안내를 그린다.
+# 표 형식이 바뀌어 추출에 실패하면 JSON을 갱신하지 않고 실행이 실패한다 → GitHub 실패 알림 메일로 확인.
+name: inicis-installment
+
+on:
+  schedule:
+    # 매일 00:10, 06:10, 12:10, 18:10 (KST) — 월 전환 직후에도 몇 시간 안에 반영되게
+    - cron: '10 15,21,3,9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: inicis-installment
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 이니시스 무이자 표 추출
+        run: node scripts/inicis-installment.mjs inicis/installment.json
+
+      - name: 바뀌었으면 커밋
+        id: commit
+        run: |
+          if git diff --quiet -- inicis/installment.json && git ls-files --error-unmatch inicis/installment.json >/dev/null 2>&1; then
+            echo "변경 없음"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add inicis/installment.json
+          git commit -m "inicis: 무이자 할부 정보 갱신"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # 봇 토큰으로 push하면 Pages 빌드가 자동으로 안 도는 경우가 있어 직접 요청한다
+      - name: Pages 빌드 요청
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" || echo "Pages 빌드 요청 실패 — Pages 설정이 Actions 배포 방식이면 무시해도 됨"
